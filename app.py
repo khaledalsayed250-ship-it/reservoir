@@ -6,852 +6,593 @@ import pandas as pd
 import streamlit as st
 
 
-# =========================================================
+# ============================================================
 # 1. PAGE CONFIGURATION
-# =========================================================
+# ============================================================
 
 st.set_page_config(
-    page_title="Reservoir Pressure Distribution",
+    page_title="Oil Reservoir Pressure & Water Influx",
     page_icon="🛢️",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
 
-# =========================================================
-# 2. PAGE STYLE
-# =========================================================
+# ============================================================
+# 2. CUSTOM CSS (explicit colors: safe in light and dark themes)
+# ============================================================
 
 st.markdown(
     """
     <style>
         .main-title {
-            text-align: center;
-            font-size: 30px;
-            font-weight: bold;
-            color: #155e75;
+            font-size: 32px; font-weight: 800; color: #174A6E;
+            text-align: center; margin-bottom: 5px;
         }
-
-        .sub-title {
-            text-align: center;
-            font-size: 15px;
-            color: #64748b;
-            margin-bottom: 25px;
+        .subtitle {
+            font-size: 16px; color: #64748b;
+            text-align: center; margin-bottom: 25px;
         }
-
-        .result-card {
-            background: linear-gradient(135deg, #dbeafe, #dcfce7);
-            border: 2px solid #16a34a;
-            border-radius: 14px;
-            padding: 22px;
-            text-align: center;
-            margin: 15px 0;
+        .card {
+            background: #f0f9ff; border: 2px solid #0ea5e9;
+            border-radius: 14px; padding: 16px 12px;
+            text-align: center; margin: 6px 0 12px 0;
         }
-
-        .result-value {
-            font-size: 34px;
-            font-weight: bold;
-            color: #166534;
+        .card .label {
+            font-size: 15px; font-weight: 600; color: #075985;
         }
-
-        .result-label {
-            font-size: 17px;
-            color: #14532d;
+        .card .value {
+            font-size: 26px; font-weight: 800; color: #0c4a6e;
+            direction: ltr;
         }
-
-        div[data-testid="stMetric"] {
-            background-color: #f8fafc;
-            border: 1px solid #e2e8f0;
-            padding: 12px;
-            border-radius: 10px;
+        .card .unit { font-size: 13px; color: #475569; }
+        .card.green {
+            background: #f0fdf4; border-color: #38a169;
         }
+        .card.green .label { color: #166534; }
+        .card.green .value { color: #14532d; }
+        .card.orange {
+            background: #fff7ed; border-color: #f97316;
+        }
+        .card.orange .label { color: #9a3412; }
+        .card.orange .value { color: #7c2d12; }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
 
-st.markdown(
-    '<div class="main-title">'
-    'Oil Reservoir Pressure Distribution'
-    '</div>',
-    unsafe_allow_html=True,
-)
-
-st.markdown(
-    '<div class="sub-title">'
-    'Transient Pressure Analysis Using Ei(-x)'
-    '</div>',
-    unsafe_allow_html=True,
-)
-
-
-# =========================================================
-# 3. EXPONENTIAL INTEGRAL Ei(-x)
-# =========================================================
-
-def ei_negative(x):
-    """
-    Calculate Ei(-x) for positive x.
-
-    Uses a convergent series for x < 1 and a continued
-    fraction for x >= 1.
-
-    Ei(-x) = -E1(x), for x > 0.
-    """
-
-    if not math.isfinite(x) or x <= 0:
-        raise ValueError("x must be finite and greater than zero.")
-
-    gamma = 0.5772156649015329
-    tolerance = 1e-14
-    max_iterations = 1000
-
-    # Series expansion for 0 < x < 1.
-    if x < 1.0:
-        term = 1.0
-        series_sum = 0.0
-
-        for k in range(1, max_iterations + 1):
-            term *= -x / k
-            addend = term / k
-            series_sum += addend
-
-            if abs(addend) < tolerance * max(
-                1.0, abs(series_sum)
-            ):
-                break
-
-        return -gamma - math.log(x) - series_sum
-
-    # Continued fraction for E1(x), using modified Lentz.
-    tiny = 1e-300
-    b = x + 1.0
-    c = 1.0 / tiny
-    d = 1.0 / b
-    h_cf = d
-
-    for i in range(1, max_iterations + 1):
-        a = -float(i * i)
-        b += 2.0
-
-        d = a * d + b
-
-        if abs(d) < tiny:
-            d = tiny
-
-        c = b + a / c
-
-        if abs(c) < tiny:
-            c = tiny
-
-        d = 1.0 / d
-        delta = c * d
-        h_cf *= delta
-
-        if abs(delta - 1.0) < tolerance:
-            break
-
-    e1 = h_cf * math.exp(-x)
-
-    return -e1
-
-
-# =========================================================
-# 4. INPUT VALIDATION
-# =========================================================
-
-def is_valid_positive(value):
-    return (
-        value is not None
-        and math.isfinite(float(value))
-        and float(value) > 0
-    )
-
-
-def all_finite(values):
-    return all(
-        value is not None
-        and math.isfinite(float(value))
-        for value in values
-    )
-
-
-# =========================================================
-# 5. INPUT FORM
-# =========================================================
-
-st.header("القسم الأول: مدخلات البيانات")
-
-st.caption(
-    "أدخل جميع البيانات المطلوبة ثم اضغط زر حساب النتائج. "
-    "الحقول الرقمية تبدأ فارغة، ولا تُجرى الحسابات قبل "
-    "اكتمال البيانات والتحقق من صحتها."
-)
-with st.form("reservoir_input_form"):
-
-    # -----------------------------------------------------
-    # 5.1 Personal variable
-    # -----------------------------------------------------
-
-    st.subheader("1. المتغير الشخصي")
-
-    i_value = st.number_input(
-        "المتغير i",
-        min_value=1,
-        step=1,
-        value=None,
-        placeholder="أدخل قيمة i",
-        key="input_i",
-    )
-
-    # -----------------------------------------------------
-    # 5.2 Reservoir parameters
-    # -----------------------------------------------------
-
-    st.subheader("2. الثوابت البترولية")
-
-    c1, c2, c3, c4 = st.columns(4)
-
-    with c1:
-        Pi = st.number_input(
-            "Pi [psi]",
-            min_value=0.0,
-            value=None,
-            placeholder="الضغط البدائي",
-            key="input_Pi",
-        )
-
-        K = st.number_input(
-            "K [mD]",
-            min_value=0.0,
-            value=None,
-            placeholder="النفوذية",
-            key="input_K",
-        )
-
-    with c2:
-        phi_percent = st.number_input(
-            "phi [%]",
-            min_value=0.0,
-            max_value=100.0,
-            value=None,
-            placeholder="المسامية %",
-            key="input_phi",
-        )
-
-        ct = st.number_input(
-            "ct [psi⁻¹]",
-            min_value=0.0,
-            value=None,
-            placeholder="الانضغاطية",
-            key="input_ct",
-        )
-
-    with c3:
-        B = st.number_input(
-            "B [bbl/STB]",
-            min_value=0.0,
-            value=None,
-            placeholder="عامل حجم النفط",
-            key="input_B",
-        )
-
-        h = st.number_input(
-            "h [ft]",
-            min_value=0.0,
-            value=None,
-            placeholder="ثخانة الطبقة",
-            key="input_h",
-        )
-
-    with c4:
-        mu = st.number_input(
-            "mu [cP]",
-            min_value=0.0,
-            value=None,
-            placeholder="لزوجة النفط",
-            key="input_mu",
-        )
-
-        t = st.number_input(
-            "t [hours]",
-            min_value=0.0,
-            value=None,
-            placeholder="الزمن",
-            key="input_t",
-        )
-
-    # -----------------------------------------------------
-    # 5.3 Monitoring point
-    # -----------------------------------------------------
-
-    st.subheader("3. نقطة المراقبة M")
-
-    m1, m2, m3 = st.columns([2, 1, 1])
-
-    with m1:
-        point_name = st.text_input(
-            "اسم نقطة المراقبة",
-            value="",
-            placeholder="أدخل اسم النقطة",
-            key="input_point_name",
-        )
-
-        point_symbol = st.text_input(
-            "رمز النقطة",
-            value="",
-            placeholder="مثال: M",
-            key="input_point_symbol",
-        )
-
-    with m2:
-        Mx = st.number_input(
-            "Mx [ft]",
-            value=None,
-            placeholder="إحداثي X",
-            key="input_Mx",
-        )
-
-    with m3:
-        My = st.number_input(
-            "My [ft]",
-            value=None,
-            placeholder="إحداثي Y",
-            key="input_My",
-        )
-
-    # -----------------------------------------------------
-    # 5.4 Wells
-    # -----------------------------------------------------
-
-    st.subheader("4. إحداثيات الآبار ومعدلات الإنتاج")
-
-    st.markdown("**البئر الأول**")
-
-    w1c1, w1c2, w1c3 = st.columns(3)
-
-    with w1c1:
-        X1 = st.number_input(
-            "X1 [ft]",
-            value=None,
-            placeholder="إحداثي X للبئر الأول",
-            key="input_X1",
-        )
-
-    with w1c2:
-        Y1 = st.number_input(
-            "Y1 [ft]",
-            value=None,
-            placeholder="إحداثي Y للبئر الأول",
-            key="input_Y1",
-        )
-
-    with w1c3:
-        st.text_input(
-            "q1 [STB/day]",
-            value="يُحسب من i",
-            disabled=True,
-            key="display_q1",
-        )
-
-    st.markdown("**البئر الثاني**")
-
-    w2c1, w2c2, w2c3 = st.columns(3)
-    with w2c1:
-        X2 = st.number_input(
-            "X2 [ft]",
-            value=None,
-            placeholder="إحداثي X للبئر الثاني",
-            key="input_X2",
-        )
-
-    with w2c2:
-        Y2 = st.number_input(
-            "Y2 [ft]",
-            value=None,
-            placeholder="إحداثي Y للبئر الثاني",
-            key="input_Y2",
-        )
-
-    with w2c3:
-        q2 = st.number_input(
-            "q2 [STB/day]",
-            min_value=0.0,
-            value=None,
-            placeholder="معدل إنتاج البئر الثاني",
-            key="input_q2",
-        )
-
-    st.markdown("**البئر الثالث**")
-
-    w3c1, w3c2, w3c3 = st.columns(3)
-
-    with w3c1:
-        X3 = st.number_input(
-            "X3 [ft]",
-            value=None,
-            placeholder="إحداثي X للبئر الثالث",
-            key="input_X3",
-        )
-
-    with w3c2:
-        Y3 = st.number_input(
-            "Y3 [ft]",
-            value=None,
-            placeholder="إحداثي Y للبئر الثالث",
-            key="input_Y3",
-        )
-
-    with w3c3:
-        q3 = st.number_input(
-            "q3 [STB/day]",
-            min_value=0.0,
-            value=None,
-            placeholder="معدل إنتاج البئر الثالث",
-            key="input_q3",
-        )
-
-    submitted = st.form_submit_button(
-        "حساب النتائج",
-        type="primary",
-        use_container_width=True,
-    )
-
-
-# =========================================================
-# 6. CALCULATIONS AND RESULTS
-# =========================================================
-
-if submitted:
-
-    st.divider()
-    st.header("القسم الثاني: النتائج والحسابات النهائية")
-
-    required_values = {
-        "i": i_value,
-        "Pi": Pi,
-        "K": K,
-        "phi": phi_percent,
-        "ct": ct,
-        "B": B,
-        "h": h,
-        "mu": mu,
-        "t": t,
-        "Mx": Mx,
-        "My": My,
-        "X1": X1,
-        "Y1": Y1,
-        "X2": X2,
-        "Y2": Y2,
-        "q2": q2,
-        "X3": X3,
-        "Y3": Y3,
-        "q3": q3,
-    }
-
-    missing_fields = [
-        name
-        for name, value in required_values.items()
-        if value is None
-    ]
-
-    if missing_fields:
-        st.error(
-            "يرجى تعبئة الحقول التالية: "
-            + ", ".join(missing_fields)
-        )
-        st.stop()
-
-    if not point_name.strip():
-        st.error("يرجى إدخال اسم نقطة المراقبة.")
-        st.stop()
-
-    if not point_symbol.strip():
-        st.error("يرجى إدخال رمز نقطة المراقبة.")
-        st.stop()
-
-    positive_parameters = {
-        "Pi": Pi,
-        "K": K,
-        "phi": phi_percent,
-        "ct": ct,
-        "B": B,
-        "h": h,
-        "mu": mu,
-        "t": t,
-    }
-
-    invalid_parameters = [
-        name
-        for name, value in positive_parameters.items()
-        if not is_valid_positive(value)
-    ]
-
-    if invalid_parameters:
-        st.error(
-            "يجب أن تكون القيم أكبر من الصفر للمتغيرات: "
-            + ", ".join(invalid_parameters)
-        )
-        st.stop()
-
-    if not all_finite(
-        [
-            Mx, My,
-            X1, Y1,
-            X2, Y2,
-            X3, Y3,
-            q2, q3,
-        ]
-    ):
-        st.error("توجد قيمة غير صالحة أو غير محدودة.")
-        st.stop()
-
-    if q2 < 0 or q3 < 0:
-        st.error("معدلات الإنتاج لا يمكن أن تكون سالبة.")
-        st.stop()
-
-    # -----------------------------------------------------
-    # 6.1 Prepare values
-    # -----------------------------------------------------
-
-    phi = float(phi_percent) / 100.0
-
-    q1 = 100.0 + 10.0 * (int(i_value) - 1)
-
-    wells = pd.DataFrame(
-        {
-            "اسم البئر": [
-                "البئر 1",
-                "البئر 2",
-                "البئر 3",
-            ],
-            "X [ft]": [
-                float(X1),
-                float(X2),
-                float(X3),
-            ],
-            "Y [ft]": [
-                float(Y1),
-                float(Y2),
-                float(Y3),
-            ],
-            "q [STB/day]": [
-                q1,
-                float(q2),
-                float(q3),
-            ],
-        }
-    )
-    # -----------------------------------------------------
-    # 6.2 Diffusivity coefficient and investigation radius
-    # -----------------------------------------------------
-
-    y = (
-        0.0002637 * float(K)
-        / (phi * float(mu) * float(ct))
-    )
-
-    ri = math.sqrt(y * float(t))
-
-    # -----------------------------------------------------
-    # 6.3 Real distance and x
-    # -----------------------------------------------------
-
-    dx = float(Mx) - wells["X [ft]"].to_numpy()
-    dy = float(My) - wells["Y [ft]"].to_numpy()
-
-    r = np.sqrt(dx**2 + dy**2)
-    r_squared = r**2
-
-    x = (
-        948.0
-        * phi
-        * float(mu)
-        * float(ct)
-        * r_squared
-        / (float(K) * float(t))
-    )
-
-    if np.any(r == 0):
-        st.error(
-            "نقطة المراقبة تطابق إحداثيات أحد الآبار. "
-            "المعادلة تصبح مفردة عند r = 0. "
-            "يجب استخدام نصف قطر بئر فعلي أو تغيير الإحداثيات."
-        )
-        st.stop()
-
-    if np.any(x <= 0) or not np.all(np.isfinite(x)):
-        st.error("تعذر حساب x بسبب قيم عددية غير صالحة.")
-        st.stop()
-
-    # -----------------------------------------------------
-    # 6.4 Exponential integral
-    # -----------------------------------------------------
-
-    ei_values = np.array(
-        [ei_negative(float(value)) for value in x]
-    )
-
-    # -----------------------------------------------------
-    # 6.5 Pressure drawdown
-    # -----------------------------------------------------
-
-    # Ei(-x) is negative for x > 0.
-    # Positive drawdown magnitude is therefore -C * Ei(-x).
-
-    coefficient = (
-        70.6
-        * wells["q [STB/day]"].to_numpy()
-        * float(mu)
-        * float(B)
-        / (float(K) * float(h))
-    )
-
-    delta_p = -coefficient * ei_values
-
-    delta_p_total = float(np.sum(delta_p))
-    P_M = float(Pi) + delta_p_total
-
-    # =====================================================
-    # 7. GENERAL RESULTS TABLE
-    # =====================================================
-
-    st.subheader("الجدول الأول: النتائج العامة للآبار")
-
-    general_results = pd.DataFrame(
-        {
-            "اسم البئر": wells["اسم البئر"],
-            "معدل الإنتاج q [STB/day]":
-                wells["q [STB/day]"],
-            "معامل الانتشار y [ft²/hour]":
-                [y] * len(wells),
-            "المسافة المؤثرة ri [ft]":
-                [ri] * len(wells),
-        }
-    )
-
-    st.dataframe(
-        general_results.style.format(
-            {
-                "معدل الإنتاج q [STB/day]": "{:,.3f}",
-                "معامل الانتشار y [ft²/hour]": "{:,.5f}",
-                "المسافة المؤثرة ri [ft]": "{:,.3f}",
-            }
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    # =====================================================
-    # 8. DETAILED RESULTS TABLE
-    # =====================================================
-
-    st.subheader("الجدول الثاني: الحسابات التفصيلية")
-
-    detailed_results = pd.DataFrame(
-        {
-            "اسم البئر": wells["اسم البئر"],
-            "r [ft]": r,
-            "r² [ft²]": r_squared,
-            "x [-]": x,
-            "Ei(-x)": ei_values,
-            "q [STB/day]": wells["q [STB/day]"],
-            "Delta P [psi]": delta_p,
-        }
-    )
-
-    st.dataframe(
-        detailed_results.style.format(
-            {
-                "r [ft]": "{:,.4f}",
-                "r² [ft²]": "{:,.4f}",
-                "x [-]": "{:.8g}",
-                "Ei(-x)": "{:.8f}",
-                "q [STB/day]": "{:,.3f}",
-                "Delta P [psi]": "{:,.4f}",
-            }
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    # =====================================================
-    # 9. TOTAL DRAWDOWN
-    # =====================================================
-
-    st.subheader("مجموع هبوطات الضغط")
-
-    st.latex(
-        r"\Delta P_{\mathrm{total}}"
-        r"=\sum_{j=1}^{3}\Delta P_j"
-    )
-
-    # استخدام st.markdown مع تصميم مخصص لتجنب المربع الأبيض وجعل النص أسود واضح
+def card(label, value, unit="", color=""):
     st.markdown(
         f"""
-        <div style="
-            background-color: #f8fafc;
-            border: 1px solid #cbd5e1;
-            padding: 15px;
-            border-radius: 10px;
-            text-align: center;
-            margin: 10px 0;
-        ">
-            <span style="font-size: 16px; color: #334155; font-weight: bold;">Delta P total [psi]</span><br>
-            <span style="font-size: 28px; color: #000000; font-weight: bold;">{delta_p_total:,.4f}</span>
+        <div class="card {color}">
+            <div class="label">{label}</div>
+            <div class="value">{value}</div>
+            <div class="unit">{unit}</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    # =====================================================
-    # 10. FINAL PRESSURE
-    # =====================================================
 
-    st.subheader("النتيجة النهائية عند نقطة المراقبة")
+# ============================================================
+# 3. HELPERS
+# ============================================================
 
-    st.latex(
-        r"P(M)=P_i-\Delta P_{\mathrm{total}}"
+ARABIC_DIGITS = str.maketrans(
+    "٠١٢٣٤٥٦٧٨٩٫", "0123456789."
+)
+
+
+def ei_negative(x):
+    """Ei(-x) for x > 0 (series for x < 1, continued fraction otherwise)."""
+    if not np.isfinite(x) or x <= 0:
+        raise ValueError("x must be a finite positive number.")
+
+    gamma = 0.5772156649015329
+    eps = 1e-14
+    max_iter = 500
+
+    if x < 1.0:
+        term = 1.0
+        series_sum = 0.0
+        for k in range(1, max_iter + 1):
+            term *= -x / k
+            addend = term / k
+            series_sum += addend
+            if abs(addend) < eps * max(1.0, abs(series_sum)):
+                break
+        return -gamma - math.log(x) - series_sum
+
+    b = x + 1.0
+    c = 1.0 / 1e-300
+    d = 1.0 / b
+    h_cf = d
+    for i in range(1, max_iter + 1):
+        a = -float(i * i)
+        b += 2.0
+        d = a * d + b
+        if abs(d) < 1e-300:
+            d = 1e-300
+        c = b + a / c
+        if abs(c) < 1e-300:
+            c = 1e-300
+        d = 1.0 / d
+        delta = c * d
+        h_cf *= delta
+        if abs(delta - 1.0) < eps:
+            break
+    return -(h_cf * math.exp(-x))
+
+
+def parse_times(text):
+    cleaned = text.translate(ARABIC_DIGITS).replace("،", ",")
+    parts = [p.strip() for p in cleaned.split(",") if p.strip()]
+    if not parts:
+        raise ValueError("أدخل الأزمنة مفصولة بفواصل.")
+    try:
+        values = [float(p) for p in parts]
+    except ValueError:
+        raise ValueError("الأزمنة يجب أن تكون أرقامًا مفصولة بفواصل.")
+    arr = np.array(values, dtype=float)
+    if not np.all(np.isfinite(arr)) or np.any(arr < 0):
+        raise ValueError("الأزمنة يجب أن تكون أرقامًا غير سالبة.")
+    return np.unique(arr)  # sorted, no duplicates
+
+
+def num(label, key, **kwargs):
+    """Number input that starts empty."""
+    return st.number_input(label, value=None, key=key, **kwargs)
+
+
+def positive(value, name):
+    if value is None or not np.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be a finite positive number.")
+
+
+# ============================================================
+# 4. HEADER
+# ============================================================
+
+st.markdown(
+    '<div class="main-title">Oil Reservoir Pressure & Water Influx</div>',
+    unsafe_allow_html=True,
+)
+st.markdown(
+    '<div class="subtitle">Exponential Integral · Pot Aquifer · '
+    "Schilthuis Steady-State</div>",
+    unsafe_allow_html=True,
+)
+st.info(
+    "يحسب التطبيق الضغط عند نقطة مراقبة متأثرة بثلاثة آبار إنتاجية "
+    "(مبدأ التراكب)، ثم الدخول المائي بنموذجي بوت وشيلثويس."
+)
+
+
+# ============================================================
+# 5. PERSONAL VARIABLE + TIMES
+# ============================================================
+
+st.header("1. المتغير الشخصي (i)")
+
+i_value = num(
+    "قيمة المتغير الشخصي i",
+    "i_value",
+    min_value=1,
+    max_value=100000,
+    step=1,
+    help="يُستخدم لحساب q1 و raq تلقائيًا.",
+)
+
+q1 = raq = None
+if i_value is not None:
+    q1 = 100.0 + 10.0 * (i_value - 1)
+    raq = 2500.0 + 100.0 * (i_value - 1)
+    c1, c2 = st.columns(2)
+    with c1:
+        card("معدل إنتاج البئر الأول q1", f"{q1:,.2f}", "STB/day")
+    with c2:
+        card("نصف قطر الحافة المائية raq", f"{raq:,.2f}", "ft", "orange")
+
+times_text = st.text_input(
+    "الأزمنة (مفصولة بفواصل)",
+    key="times_text",
+    placeholder="0, 200, 400, 500, 800, 1000, 2000, 3000",
+)
+time_unit = st.radio(
+    "وحدة الأزمنة المُدخلة",
+    ["hours", "days"],
+    horizontal=True,
+    key="time_unit",
+    help="تُحوَّل داخليًا: الساعات لمعادلة Ei، والأيام لتكامل شيلثويس.",
+)
+
+
+# ============================================================
+# 6. PETROLEUM PARAMETERS
+# ============================================================
+
+st.header("2. الثوابت البترولية")
+
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    Pi = num("الضغط البدائي Pi [psi]", "Pi", min_value=0.001)
+    K = num("نفوذية المكمن K [mD]", "K", min_value=0.001)
+    re_in = num(
+        "نصف القطر الخارجي للمكمن re [ft] (فارغ = 2000)",
+        "re",
+        min_value=0.001,
     )
 
-    st.success(
-        f"النقطة: {point_name.strip()} "
-        f"({point_symbol.strip()})\n\n"
-        f"الضغط الآني P(M) = {P_M:,.4f} psi"
+with col2:
+    phi_percent = num(
+        "المسامية phi [%]", "phi", min_value=0.001, max_value=100.0
+    )
+    ct = num(
+        "الانضغاطية الكلية ct [psi⁻¹]",
+        "ct",
+        min_value=1e-12,
+        format="%.3e",
+    )
+    K_aq_in = num(
+        "نفوذية الطبقة المائية K_aq [mD] (فارغ = K)",
+        "K_aq",
+        min_value=0.001,
     )
 
-    if delta_p_total < 0 and P_M < float(Pi):
-        st.caption(
-            "تحقق الشرط: الضغط المحسوب أقل من الضغط البدائي."
-        )
-    elif delta_p_total == 0:
-        st.warning(
-            "مجموع هبوط الضغط يساوي صفرًا، "
-            "لذلك لم يحدث هبوط محسوب في هذه الحالة."
-        )
-    else:
-        st.warning(
-            "الضغط المحسوب ليس أقل من الضغط البدائي. "
-            "تحقق من المدخلات والمعادلات والوحدات."
-        )
+with col3:
+    B = num("عامل حجم النفط B [bbl/STB]", "B", min_value=0.001)
+    h = num("ثخانة المكمن h [ft]", "h", min_value=0.001)
+    h_aq = num("ثخانة الطبقة المائية h_aq [ft]", "h_aq", min_value=0.001)
 
-    # =====================================================
-    # 11. SMALL WELL LOCATION MAP WITH DISTANCES
-    # =====================================================
-
-    st.subheader("خريطة الآبار ونقطة المراقبة")
-
-    fig, ax = plt.subplots(figsize=(7, 4.8))
-
-    well_x = wells["X [ft]"].to_numpy()
-    well_y = wells["Y [ft]"].to_numpy()
-
-    # Plot production wells.
-    ax.scatter(
-        well_x,
-        well_y,
-        s=75,
-        marker="o",
-        label="Production wells",
-        zorder=3,
+with col4:
+    mu = num("لزوجة النفط mu [cP]", "mu", min_value=0.001)
+    mu_w_in = num(
+        "لزوجة الماء mu_w [cP] (فارغ = mu)", "mu_w", min_value=0.001
     )
 
-    # Plot monitoring point.
-    ax.scatter(
-        [float(Mx)],
-        [float(My)],
-        s=180,
-        marker="*",
-        label="Monitoring point",
-        zorder=4,
+
+# ============================================================
+# 7. MONITORING POINT AND WELLS
+# ============================================================
+
+st.header("3. إحداثيات الآبار ونقطة المراقبة")
+
+st.subheader("نقطة المراقبة")
+m1, m2, m3, m4 = st.columns(4)
+with m1:
+    point_name = st.text_input(
+        "اسم نقطة المراقبة", key="pname", placeholder="Monitoring Point"
+    )
+with m2:
+    point_symbol = st.text_input(
+        "رمز النقطة", key="psym", max_chars=5, placeholder="M"
+    )
+with m3:
+    Mx = num("إحداثي Mx [ft]", "Mx")
+with m4:
+    My = num("إحداثي My [ft]", "My")
+
+st.subheader("بيانات الآبار الإنتاجية")
+
+well_names = ["Well 1", "Well 2", "Well 3"]
+well_x, well_y, well_q = [], [], []
+for n, name in enumerate(well_names):
+    a, b_, c_, d_ = st.columns(4)
+    with a:
+        st.markdown(f"**{name}**")
+    with b_:
+        well_x.append(num(f"X{n + 1} [ft]", f"wx{n}"))
+    with c_:
+        well_y.append(num(f"Y{n + 1} [ft]", f"wy{n}"))
+    with d_:
+        if n == 0:
+            well_q.append(q1)
+            card("q1 (تلقائي)", "—" if q1 is None else f"{q1:,.2f}", "STB/day")
+        else:
+            well_q.append(
+                num(
+                    f"q{n + 1} [STB/day]",
+                    f"wq{n}",
+                    min_value=0.0,
+                )
+            )
+
+
+# ============================================================
+# 8. CHECK INPUTS
+# ============================================================
+
+required = {
+    "i": i_value, "Pi": Pi, "K": K, "phi": phi_percent, "ct": ct,
+    "B": B, "h": h, "h_aq": h_aq, "mu": mu, "Mx": Mx, "My": My,
+}
+required.update({f"X{n+1}": v for n, v in enumerate(well_x)})
+required.update({f"Y{n+1}": v for n, v in enumerate(well_y)})
+required.update({f"q{n+1}": v for n, v in enumerate(well_q)})
+missing = [k for k, v in required.items() if v is None]
+
+if missing or not times_text.strip():
+    st.warning(
+        "أكمل جميع الحقول المطلوبة لعرض النتائج. "
+        + (f"الحقول الناقصة: {', '.join(missing)}" if missing else "")
+        + ("  — الأزمنة" if not times_text.strip() else "")
+    )
+    st.stop()
+
+
+# ============================================================
+# 9. CALCULATIONS
+# ============================================================
+
+try:
+    for val, nm in [
+        (Pi, "Pi"), (K, "K"), (ct, "ct"), (B, "B"), (h, "h"),
+        (h_aq, "h_aq"), (mu, "mu"), (phi_percent, "phi"),
+    ]:
+        positive(val, nm)
+
+    phi = phi_percent / 100.0
+    re = 2000.0 if re_in is None else float(re_in)
+    K_aq = K if K_aq_in is None else float(K_aq_in)
+    mu_w = mu if mu_w_in is None else float(mu_w_in)
+    positive(re, "re")
+    positive(K_aq, "K_aq")
+    positive(mu_w, "mu_w")
+
+    if raq <= re:
+        raise ValueError(
+            f"raq ({raq:,.0f}) يجب أن يكون أكبر من re ({re:,.0f})."
+        )
+    if any(q < 0 for q in well_q):
+        raise ValueError("معدلات الإنتاج السالبة غير مدعومة.")
+
+    times_in = parse_times(times_text)
+    t_hours = times_in * (24.0 if time_unit == "days" else 1.0)
+    t_days = t_hours / 24.0
+
+    # Aquifer constants (automatic).
+    C_sch = (0.00708 * K_aq * h_aq) / (mu_w * math.log(raq / re))
+    V_pore = math.pi * (raq**2 - re**2) * h_aq * phi  # ft3
+    V_pore_bbl = V_pore / 5.615
+
+    # Diffusivity and distances.
+    y_diff = 0.0002637 * K / (phi * mu * ct)  # ft2/hour
+    wx = np.array(well_x, dtype=float)
+    wy = np.array(well_y, dtype=float)
+    q = np.array(well_q, dtype=float)
+    r = np.sqrt((Mx - wx) ** 2 + (My - wy) ** 2)
+    if np.any(r <= 0):
+        raise ValueError(
+            "نقطة المراقبة تقع على إحداثيات أحد الآبار (r = 0)."
+        )
+
+    coef = 70.6 * q * mu * B / (K * h)  # psi per unit(-Ei)
+
+    # Per-time pressure.
+    n_t = len(t_hours)
+    x_mat = np.full((n_t, 3), np.nan)
+    dp_mat = np.zeros((n_t, 3))
+    for k, th in enumerate(t_hours):
+        if th <= 0:
+            continue
+        x_mat[k] = 948.0 * phi * mu * ct * r**2 / (K * th)
+        ei = np.array([ei_negative(float(v)) for v in x_mat[k]])
+        dp_mat[k] = coef * (-ei)
+
+    dp_total = -dp_mat.sum(axis=1)
+    P_M = Pi - dp_total
+    ri_t = np.sqrt(y_diff * t_hours)
+
+    # Water influx.
+    We_pot = V_pore_bbl * ct * (Pi - P_M)  # bbl
+
+    t_int = t_days.copy()
+    dp_int = (Pi - P_M).copy()
+    if t_int[0] > 0:  # start integration from t = 0 with dP = 0
+        t_int = np.concatenate([[0.0], t_int])
+        dp_int = np.concatenate([[0.0], dp_int])
+    cum = np.concatenate(
+        [[0.0], np.cumsum(0.5 * (dp_int[1:] + dp_int[:-1]) * np.diff(t_int))]
+    )
+    cum = cum[1:] if len(cum) > n_t else cum
+    We_sch = C_sch * cum  # bbl
+
+    # --------------------------------------------------------
+    # 10. GENERAL RESULTS
+    # --------------------------------------------------------
+    st.header("4. النتائج العامة")
+
+    g1, g2, g3, g4 = st.columns(4)
+    with g1:
+        card("معامل شيلثويس C_sch", f"{C_sch:,.4f}", "bbl/day/psi")
+    with g2:
+        card("الحجم الفعال V_pore", f"{V_pore:,.4g}", "ft³", "green")
+    with g3:
+        card("raq", f"{raq:,.2f}", "ft", "orange")
+    with g4:
+        card("ri عند أكبر زمن", f"{ri_t[-1]:,.2f}", "ft", "green")
+
+    general = pd.DataFrame(
+        {
+            "Well": well_names,
+            "q [STB/day]": q,
+            "y [ft²/hr]": [y_diff] * 3,
+            "ri [ft]": [ri_t[-1]] * 3,
+            "raq [ft]": [raq] * 3,
+            "r [ft]": r,
+        }
+    )
+    st.dataframe(
+        general.style.format(
+            {
+                "q [STB/day]": "{:,.2f}",
+                "y [ft²/hr]": "{:,.4f}",
+                "ri [ft]": "{:,.2f}",
+                "raq [ft]": "{:,.2f}",
+                "r [ft]": "{:,.2f}",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.caption(
+        f"re = {re:,.0f} ft · K_aq = {K_aq:,.2f} mD · mu_w = {mu_w:,.2f} cP · "
+        f"V_pore = {V_pore_bbl:,.4g} bbl. "
+        "ri = √(y·t) وفق المعادلة المحددة في المسألة."
     )
 
-    # Plot labels, connections, and numerical distances.
-    for j, row in wells.iterrows():
+    # --------------------------------------------------------
+    # 11. TIME TABLE
+    # --------------------------------------------------------
+    st.header("5. الجدول الزمني المفصل")
 
-        wx = float(row["X [ft]"])
-        wy = float(row["Y [ft]"])
-        distance = float(r[j])
-
-        ax.annotate(
-            str(row["اسم البئر"]),
-            (wx, wy),
-            xytext=(5, 6),
-            textcoords="offset points",
-            fontsize=8,
-        )
-
-        # Connect each well to M.
-        ax.plot(
-            [wx, float(Mx)],
-            [wy, float(My)],
-            linestyle="--",
-            linewidth=1.1,
-            alpha=0.8,
-        )
-
-        # Put distance label near the midpoint.
-        mid_x = (wx + float(Mx)) / 2.0
-        mid_y = (wy + float(My)) / 2.0
-
-        ax.annotate(
-            f"r{j + 1} = {distance:.2f} ft",
-            (mid_x, mid_y),
-            xytext=(4, 4),
-            textcoords="offset points",
-            fontsize=8,
-            bbox={
-                "boxstyle": "round,pad=0.2",
-                "fc": "white",
-                "alpha": 0.85,
+    detailed = pd.DataFrame(
+        {
+            f"t [{time_unit}]": times_in,
+            "t [hours]": t_hours,
+            "ri [ft]": ri_t,
+            "x1": x_mat[:, 0],
+            "x2": x_mat[:, 1],
+            "x3": x_mat[:, 2],
+            "ΔP1 [psi]": dp_mat[:, 0],
+            "ΔP2 [psi]": dp_mat[:, 1],
+            "ΔP3 [psi]": dp_mat[:, 2],
+            "ΔP total [psi]": dp_total,
+            "P(M) [psi]": P_M,
+            "We_pot [bbl]": We_pot,
+            "We_sch [bbl]": We_sch,
+        }
+    )
+    st.dataframe(
+        detailed.style.format(
+            {
+                f"t [{time_unit}]": "{:,.2f}",
+                "t [hours]": "{:,.2f}",
+                "ri [ft]": "{:,.2f}",
+                "x1": "{:.6g}",
+                "x2": "{:.6g}",
+                "x3": "{:.6g}",
+                "ΔP1 [psi]": "{:,.4f}",
+                "ΔP2 [psi]": "{:,.4f}",
+                "ΔP3 [psi]": "{:,.4f}",
+                "ΔP total [psi]": "{:,.4f}",
+                "P(M) [psi]": "{:,.4f}",
+                "We_pot [bbl]": "{:,.2f}",
+                "We_sch [bbl]": "{:,.2f}",
             },
+            na_rep="-",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.latex(r"P(M,t)=P_i-\sum_{j=1}^{3}\Delta P_j(t)")
+    st.latex(r"W_{e,pot}=V_{pore}\,c_t\,(P_i-P)")
+    st.latex(
+        r"W_{e,sch}=C_{sch}\int_0^t (P_i-P)\,dt"
+    )
+
+    if (P_M < 0).any():
+        st.warning(
+            "الضغط المحسوب أصبح سالبًا عند بعض الأزمنة؛ "
+            "راجع المدخلات أو افتراضات النموذج."
         )
 
-    ax.annotate(
-        point_symbol.strip(),
-        (float(Mx), float(My)),
-        xytext=(7, 7),
-        textcoords="offset points",
-        fontsize=10,
-        fontweight="bold",
+    last = len(times_in) - 1
+    f1, f2, f3 = st.columns(3)
+    with f1:
+        card(
+            f"P({point_symbol.strip() or 'M'}) عند t = {times_in[last]:,.2f}",
+            f"{P_M[last]:,.4f}",
+            "psi",
+            "green",
+        )
+    with f2:
+        card("We (بوت)", f"{We_pot[last]:,.2f}", "bbl")
+    with f3:
+        card("We (شيلثويس)", f"{We_sch[last]:,.2f}", "bbl", "orange")
+
+    # --------------------------------------------------------
+    # 12. PLOTS (white background, dark text: theme-independent)
+    # --------------------------------------------------------
+    plt.rcParams.update(
+        {
+            "figure.facecolor": "white",
+            "axes.facecolor": "white",
+            "savefig.facecolor": "white",
+            "text.color": "#1e293b",
+            "axes.labelcolor": "#1e293b",
+            "axes.edgecolor": "#475569",
+            "xtick.color": "#1e293b",
+            "ytick.color": "#1e293b",
+        }
     )
 
-    ax.set_xlabel("X [ft]", fontsize=9)
-    ax.set_ylabel("Y [ft]", fontsize=9)
-    ax.set_title(
-        "Well Locations and Distances to M",
-        fontsize=11,
-    )
+    st.header("6. مخطط مواقع الآبار")
+    sym = point_symbol.strip() or "M"
 
-    ax.grid(True, linestyle=":", alpha=0.5)
-    ax.legend(fontsize=8)
+    fig, ax = plt.subplots(figsize=(9, 6))
+    ax.scatter(wx, wy, s=140, c="#0369a1", label="Production Wells", zorder=3)
+    ax.scatter([Mx], [My], s=320, marker="*", c="#dc2626",
+               label="Monitoring Point", zorder=4)
+    for name, xx, yy in zip(well_names, wx, wy):
+        ax.annotate(name, (xx, yy), xytext=(7, 7), textcoords="offset points")
+    ax.annotate(sym, (Mx, My), xytext=(8, 8), textcoords="offset points",
+                fontsize=12, fontweight="bold")
+    for xx, yy, rr in zip(wx, wy, r):
+        ax.plot([Mx, xx], [My, yy], "--", lw=1, c="#64748b", alpha=0.8)
+        ax.annotate(f"{rr:,.1f} ft", ((Mx + xx) / 2, (My + yy) / 2),
+                    fontsize=9, color="#b45309")
+    ax.set_xlabel("X [ft]")
+    ax.set_ylabel("Y [ft]")
+    ax.set_title("Production Wells and Monitoring Point")
+    ax.grid(True, linestyle=":", alpha=0.6)
+    ax.legend()
     ax.set_aspect("equal", adjustable="datalim")
-
-    fig.tight_layout()
-
-    st.pyplot(fig, use_container_width=False)
-
+    st.pyplot(fig, use_container_width=True)
     plt.close(fig)
 
-    # =====================================================
-    # 12. EXPORT
-    # =====================================================
+    st.header("7. تطور الضغط والدخول المائي مع الزمن")
+    p1, p2 = st.columns(2)
 
-    st.subheader("تصدير النتائج")
+    with p1:
+        fig, ax = plt.subplots(figsize=(7, 4.5))
+        ax.plot(times_in, P_M, "o-", c="#0369a1", lw=2)
+        ax.set_xlabel(f"Time [{time_unit}]")
+        ax.set_ylabel("P(M) [psi]")
+        ax.set_title("Pressure at Monitoring Point")
+        ax.grid(True, linestyle=":", alpha=0.6)
+        st.pyplot(fig, use_container_width=True)
+        plt.close(fig)
 
-    export_data = detailed_results.to_csv(
-        index=False
-    ).encode("utf-8-sig")
+    with p2:
+        fig, ax = plt.subplots(figsize=(7, 4.5))
+        ax.plot(times_in, We_pot, "o-", c="#16a34a", lw=2, label="Pot")
+        ax.plot(times_in, We_sch, "s--", c="#ea580c", lw=2,
+                label="Schilthuis")
+        ax.set_xlabel(f"Time [{time_unit}]")
+        ax.set_ylabel("We [bbl]")
+        ax.set_title("Cumulative Water Influx")
+        ax.grid(True, linestyle=":", alpha=0.6)
+        ax.legend()
+        st.pyplot(fig, use_container_width=True)
+        plt.close(fig)
 
+    # --------------------------------------------------------
+    # 13. DOWNLOAD
+    # --------------------------------------------------------
+    st.header("8. تصدير النتائج")
     st.download_button(
-        label="تحميل النتائج بصيغة CSV",
-        data=export_data,
-        file_name="reservoir_pressure_results.csv",
+        label="تحميل الجدول الزمني المفصل CSV",
+        data=detailed.to_csv(index=False).encode("utf-8-sig"),
+        file_name="reservoir_time_results.csv",
         mime="text/csv",
     )
 
-else:
-    st.info(
-        "أدخل البيانات في القسم الأول، ثم اضغط "
-        "«حساب النتائج» لإظهار الجداول والحسابات والرسم."
-    )
+except ValueError as error:
+    st.error(f"خطأ في المدخلات أو الحسابات: {error}")
+
+except (OverflowError, ZeroDivisionError):
+    st.error("حدث خطأ عددي أثناء الحساب. تحقق من قيم المدخلات.")
