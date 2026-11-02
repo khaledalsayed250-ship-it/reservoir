@@ -125,6 +125,23 @@ def ei_negative(x):
     return -(h_cf * math.exp(-x))
 
 
+def wed_ved(t_d):
+    """Dimensionless water influx WeD(tD) for an infinite radial aquifer
+    (Van Everdingen-Hurst), three-regime correlation."""
+    if t_d <= 0:
+        return 0.0
+    if t_d < 0.01:
+        return 2.0 * math.sqrt(t_d / math.pi)
+    if t_d <= 200.0:
+        s = math.sqrt(t_d)
+        num_ = (1.2838 * s + 1.19328 * t_d
+                + 0.269872 * t_d**1.5 + 0.00855294 * t_d**2)
+        den_ = 1.0 + 0.616599 * s + 0.0413008 * t_d
+        return num_ / den_
+    # tD > 200 (published constants: +2.02566 and -4.29881)
+    return (-4.29881 + 2.02566 * t_d) / math.log(t_d)
+
+
 def parse_times(text):
     cleaned = text.translate(ARABIC_DIGITS).replace("،", ",")
     parts = [p.strip() for p in cleaned.split(",") if p.strip()]
@@ -160,12 +177,13 @@ st.markdown(
 )
 st.markdown(
     '<div class="subtitle">Exponential Integral · Pot Aquifer · '
-    "Schilthuis Steady-State</div>",
+    "Schilthuis Steady-State · Van Everdingen-Hurst</div>",
     unsafe_allow_html=True,
 )
 st.info(
     "يحسب التطبيق الضغط عند نقطة مراقبة متأثرة بثلاثة آبار إنتاجية "
-    "(مبدأ التراكب)، ثم الدخول المائي بنموذجي بوت وشيلثويس."
+    "(مبدأ التراكب)، ثم الدخول المائي بثلاثة نماذج: بوت وشيلثويس "
+    "وفان إفرامجينغن-هيرست (VED)."
 )
 
 
@@ -381,12 +399,12 @@ try:
         ei = np.array([ei_negative(float(v)) for v in x_mat[k]])
         dp_mat[k] = coef * (-ei)
 
-    dp_total = -dp_mat.sum(axis=1)
+    dp_total = dp_mat.sum(axis=1)
     P_M = Pi - dp_total
     ri_t = np.sqrt(y_diff * t_hours)
 
     # Water influx.
-    We_pot = V_pore_bbl * ct * (Pi - P_M)  # bbl
+    We_pot = -V_pore_bbl * ct * (Pi - P_M)  # bbl
 
     t_int = t_days.copy()
     dp_int = (Pi - P_M).copy()
@@ -394,17 +412,36 @@ try:
         t_int = np.concatenate([[0.0], t_int])
         dp_int = np.concatenate([[0.0], dp_int])
     cum = np.concatenate(
-        [[0.0], np.cumsum(0.5 * (dp_int[1:] + dp_int[:-1]) * np.diff(t_int))]
+        [[0.0], np.cumsum(-0.5 * (dp_int[1:] + dp_int[:-1]) * np.diff(t_int))]
     )
     cum = cum[1:] if len(cum) > n_t else cum
     We_sch = C_sch * cum  # bbl
+
+    # Van Everdingen-Hurst (superposition, dimensionless WeD).
+    B_ved = 1.119 * phi * h_aq * (re**2) * ct  # bbl/psi
+    tD_coef = 0.00633 * K_aq / (phi * mu_w * ct * (re**2))  # 1/day
+    t_D_total = tD_coef * t_days  # tD measured from t = 0
+
+    t_sup, P_sup = t_days.copy(), P_M.copy()
+    if t_sup[0] > 0:  # prepend t = 0 with P = Pi
+        t_sup = np.concatenate([[0.0], t_sup])
+        P_sup = np.concatenate([[Pi], P_sup])
+    We_full = np.zeros(len(t_sup))
+    for n_idx in range(1, len(t_sup)):
+        acc = 0.0
+        for j in range(1, n_idx + 1):
+            dP_j = -P_sup[j - 1] + P_sup[j]
+            tD_j = tD_coef * (t_sup[n_idx] - t_sup[j - 1])
+            acc += dP_j * wed_ved(tD_j)
+        We_full[n_idx] = B_ved * acc
+    We_ved = We_full[1:] if len(We_full) > n_t else We_full  # bbl
 
     # --------------------------------------------------------
     # 10. GENERAL RESULTS
     # --------------------------------------------------------
     st.header("4. النتائج العامة")
 
-    g1, g2, g3, g4 = st.columns(4)
+    g1, g2, g3, g4, g5 = st.columns(5)
     with g1:
         card("معامل شيلثويس C_sch", f"{C_sch:,.4f}", "bbl/day/psi")
     with g2:
@@ -413,6 +450,8 @@ try:
         card("raq", f"{raq:,.2f}", "ft", "orange")
     with g4:
         card("ri عند أكبر زمن", f"{ri_t[-1]:,.2f}", "ft", "green")
+    with g5:
+        card("ثابت VED: B_ved", f"{B_ved:,.4g}", "bbl/psi")
 
     general = pd.DataFrame(
         {
@@ -461,8 +500,10 @@ try:
             "ΔP3 [psi]": dp_mat[:, 2],
             "ΔP total [psi]": dp_total,
             "P(M) [psi]": P_M,
+            "tD (VED)": t_D_total,
             "We_pot [bbl]": We_pot,
             "We_sch [bbl]": We_sch,
+            "We_ved [bbl]": We_ved,
         }
     )
     st.dataframe(
@@ -481,6 +522,8 @@ try:
                 "P(M) [psi]": "{:,.4f}",
                 "We_pot [bbl]": "{:,.2f}",
                 "We_sch [bbl]": "{:,.2f}",
+                "tD (VED)": "{:.6g}",
+                "We_ved [bbl]": "{:,.2f}",
             },
             na_rep="-",
         ),
@@ -493,6 +536,10 @@ try:
     st.latex(
         r"W_{e,sch}=C_{sch}\int_0^t (P_i-P)\,dt"
     )
+    st.latex(
+        r"W_{e,ved}(t_n)=B_{ved}\sum_{j=1}^{n}\Delta P_j\,"
+        r"W_{eD}(t_{D,n}-t_{D,j-1}),\quad B_{ved}=1.119\,\phi\,h_{aq}\,r_e^2\,c_t"
+    )
 
     if (P_M < 0).any():
         st.warning(
@@ -501,7 +548,7 @@ try:
         )
 
     last = len(times_in) - 1
-    f1, f2, f3 = st.columns(3)
+    f1, f2, f3, f4 = st.columns(4)
     with f1:
         card(
             f"P({point_symbol.strip() or 'M'}) عند t = {times_in[last]:,.2f}",
@@ -513,6 +560,8 @@ try:
         card("We (بوت)", f"{We_pot[last]:,.2f}", "bbl")
     with f3:
         card("We (شيلثويس)", f"{We_sch[last]:,.2f}", "bbl", "orange")
+    with f4:
+        card("We (VED)", f"{We_ved[last]:,.2f}", "bbl", "green")
 
     # --------------------------------------------------------
     # 12. PLOTS (white background, dark text: theme-independent)
@@ -572,9 +621,11 @@ try:
         ax.plot(times_in, We_pot, "o-", c="#16a34a", lw=2, label="Pot")
         ax.plot(times_in, We_sch, "s--", c="#ea580c", lw=2,
                 label="Schilthuis")
+        ax.plot(times_in, We_ved, "^-.", c="#7c3aed", lw=2,
+                label="Van Everdingen-Hurst")
         ax.set_xlabel(f"Time [{time_unit}]")
         ax.set_ylabel("We [bbl]")
-        ax.set_title("Cumulative Water Influx")
+        ax.set_title("Cumulative Water Influx: Pot vs Schilthuis vs VED")
         ax.grid(True, linestyle=":", alpha=0.6)
         ax.legend()
         st.pyplot(fig, use_container_width=True)
